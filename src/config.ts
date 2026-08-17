@@ -56,9 +56,8 @@ export function readKey(path: string, key: string): string {
 
 export function writeKey(path: string, key: string, value: string): void {
   const text = readText(path);
-  const next = text.replace(keyPattern(key), `${key} = ${value}`);
-  if (next === text) throw new ConfigKeyNotFoundError(key, path);
-  writeFileSync(path, next);
+  if (!keyPattern(key).test(text)) throw new ConfigKeyNotFoundError(key, path);
+  writeFileSync(path, text.replace(keyPattern(key), `${key} = ${value}`));
 }
 
 /** Append-or-replace: use when the key may legitimately be absent. */
