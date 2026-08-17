@@ -22,23 +22,32 @@ is `~/.config/ghostty/config`. Background images are discovered in
 Controls:
 
 - `j` / `k` or up / down arrows: select a control.
-- `h` or left arrow: decrease by one step / previous option.
-- `l` or right arrow: increase by one step / next option.
-- `H` / `L`: decrease or increase by a big step.
-- `0` through `9`: jump to `0.0` through `0.9` (opacity controls only).
-- `e`: type a background-image path directly (on the background-image control).
+- `h` or left arrow: stage a one-step decrease / previous option.
+- `l` or right arrow: stage a one-step increase / next option.
+- `H` / `L`: stage a big-step decrease or increase.
+- `0` through `9`: stage a jump to `0.0` through `0.9` (opacity controls only).
+- `e`: type a background-image path directly (on the background-image control);
+  the path is validated to exist before it is staged.
+- `Enter`: apply all pending changes (writes files, records one history entry,
+  reloads Ghostty).
+- `Esc`: discard all pending changes without touching the configuration.
 - `r`: reload Ghostty configuration.
 - `u`: undo the last applied change (restores the previous file contents).
 - `R`: reset to the session-start baseline.
 - `q`: quit.
 
+Adjustments never write immediately: they stage a pending change shown inline
+(`old → new`) and in a preview block listing every pending value with the
+files it will touch. Nothing changes on disk until `Enter` confirms; `Esc`
+cancels. History (`u` / `R`) records confirmed changes only.
+
 Available controls and steps:
 
-- `preset` — cycles through named appearance presets and applies the selected
-  one immediately (all numeric controls plus theme, and the background image
-  when the preset sets one), then reloads Ghostty. Shows `(custom)` when the
-  current settings match no preset. Built-in presets: `subtle`, `balanced`,
-  `dramatic`, `clear`. User presets live in `~/.config/ghostty/dial-presets.json`
+- `preset` — cycles through named appearance presets, staging the selected
+  one (all numeric controls plus theme, and the background image when the
+  preset sets one); `Enter` applies it and reloads Ghostty. Shows `(custom)`
+  when the current settings match no preset. Built-in presets: `subtle`,
+  `balanced`, `dramatic`, `clear`. User presets live in `~/.config/ghostty/dial-presets.json`
   (override with `DIAL_PRESETS`) as a JSON object mapping names to presets, e.g.
   `{"work": {"background-image-opacity": 0.2, "background-opacity": 0.9, "background-blur-radius": 20, "font-size": 15, "theme": "cent-dark"}}`;
   user presets override built-ins of the same name, and a corrupt file is
@@ -58,8 +67,8 @@ Available controls and steps:
 - `font-size` — step `0.5`, big step `1`, minimum `1`
   (written to the main config).
 
-Values are validated and clamped before writing, and Ghostty reloads through
-the configured `super+shift+,` shortcut after every accepted change.
+Values are validated and clamped before staging, and Ghostty reloads through
+the configured `super+shift+,` shortcut after every confirmed change.
 
 History: before every applied change, the current contents of the targeted
 theme files and main config are pushed onto an undo stack persisted to
