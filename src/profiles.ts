@@ -7,8 +7,8 @@
  * A missing or corrupt file fails safe to no profiles.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { HOME } from "./config.ts";
 
 export const PROFILES_PATH =
@@ -41,6 +41,7 @@ export function loadProfiles(path: string = PROFILES_PATH): Profile[] {
 }
 
 export function saveProfiles(profiles: Profile[], path: string = PROFILES_PATH): void {
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(profiles, null, 2));
 }
 

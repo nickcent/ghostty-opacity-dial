@@ -8,8 +8,8 @@
  * memory). A missing or corrupt history file fails safe to an empty stack.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { HOME } from "./config.ts";
 
 export const HISTORY_PATH =
@@ -41,6 +41,7 @@ export function loadHistory(path: string = HISTORY_PATH): HistoryEntry[] {
 }
 
 export function saveHistory(entries: HistoryEntry[], path: string = HISTORY_PATH): void {
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(entries.slice(-MAX_ENTRIES), null, 2));
 }
 
