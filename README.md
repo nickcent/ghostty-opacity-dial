@@ -1,8 +1,8 @@
 # Ghostty Opacity Dial
 
 Interactive macOS terminal control for Ghostty appearance settings:
-background-image opacity, window background opacity, background blur radius,
-and font size.
+theme and background-image switching, background-image opacity, window
+background opacity, background blur radius, and font size.
 
 ## Usage
 
@@ -15,20 +15,28 @@ and font size.
 ```
 
 The default theme directory is `~/.config/ghostty/themes` and the main config
-is `~/.config/ghostty/config`. Set `GHOSTTY_THEME_DIR` and/or
-`GHOSTTY_CONFIG` to use other locations.
+is `~/.config/ghostty/config`. Background images are discovered in
+`~/.config/ghostty/images`. Set `GHOSTTY_THEME_DIR`, `GHOSTTY_CONFIG`, and/or
+`GHOSTTY_IMAGE_DIR` to use other locations.
 
 Controls:
 
 - `j` / `k` or up / down arrows: select a control.
-- `h` or left arrow: decrease by one step.
-- `l` or right arrow: increase by one step.
+- `h` or left arrow: decrease by one step / previous option.
+- `l` or right arrow: increase by one step / next option.
 - `H` / `L`: decrease or increase by a big step.
 - `0` through `9`: jump to `0.0` through `0.9` (opacity controls only).
+- `e`: type a background-image path directly (on the background-image control).
 - `r`: reload Ghostty configuration.
 - `q`: quit.
 
 Available controls and steps:
+
+- `theme` — cycles through theme files found in the theme directory; the
+  selection is written as `theme = <name>` in the main config.
+- `background-image` — cycles through images found in the image directory, or
+  enter any path with `e`; the path is validated to exist and written as
+  `background-image = <path>` in the targeted theme files.
 
 - `background-image-opacity` — step `0.01`, big step `0.05`, clamped to `0–1`
   (written to the targeted theme files).

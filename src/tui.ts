@@ -1,19 +1,26 @@
 /** Multi-control interactive TUI for dialing Ghostty config values. */
 
-import { join } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { basename, join } from "node:path";
 import {
   CONFIG_PATH,
+  HOME,
   THEME_DIR,
   opacityValidator,
   parseNumber,
   positiveValidator,
   readKey,
+  setKey,
   writeKey,
   type Validator,
 } from "./config.ts";
 import { reloadGhostty, resolveThemes } from "./ghostty.ts";
 
-interface Control {
+const IMAGE_DIR =
+  process.env.GHOSTTY_IMAGE_DIR ?? join(HOME, ".config/ghostty/images");
+
+interface NumberControl {
+  kind: "number";
   label: string;
   key: string;
   /** Files this control reads from / writes to. */
@@ -25,9 +32,51 @@ interface Control {
   jump: boolean;
 }
 
+interface CycleControl {
+  kind: "cycle";
+  label: string;
+  /** Discover available options (absolute values to write). */
+  options: () => string[];
+  /** Currently applied value, or null when unset/unreadable. */
+  current: () => string | null;
+  /** Persist an option. */
+  apply: (option: string) => void;
+  /** Short display form for an option (defaults to identity). */
+  display?: (option: string) => string;
+  /** Empty-options message shown in the footer. */
+  emptyHint: string;
+  /** When true, `e` opens a free-text path prompt. */
+  promptable?: boolean;
+}
+
+type Control = NumberControl | CycleControl;
+
 function bar(value: number, width = 40): string {
   const filled = Math.round(Math.min(1, Math.max(0, value)) * width);
   return "[" + "█".repeat(filled) + "░".repeat(width - filled) + "]";
+}
+
+function discoverThemes(): string[] {
+  try {
+    return readdirSync(THEME_DIR, { withFileTypes: true })
+      .filter((e) => e.isFile())
+      .map((e) => e.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+function discoverImages(): string[] {
+  try {
+    if (!existsSync(IMAGE_DIR)) return [];
+    return readdirSync(IMAGE_DIR, { withFileTypes: true })
+      .filter((e) => e.isFile())
+      .map((e) => join(IMAGE_DIR, e.name))
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 export function run(themeArg: string): void {
@@ -36,6 +85,40 @@ export function run(themeArg: string): void {
 
   const controls: Control[] = [
     {
+      kind: "cycle",
+      label: "theme",
+      options: discoverThemes,
+      current: () => {
+        try {
+          return readKey(CONFIG_PATH, "theme");
+        } catch {
+          return null;
+        }
+      },
+      apply: (name) => setKey(CONFIG_PATH, "theme", name),
+      emptyHint: `no theme files found in ${THEME_DIR}`,
+    },
+    {
+      kind: "cycle",
+      label: "background-image",
+      options: discoverImages,
+      current: () => {
+        try {
+          return readKey(themePaths[0]!, "background-image");
+        } catch {
+          return null;
+        }
+      },
+      apply: (path) => {
+        if (!existsSync(path)) throw new Error(`Image not found: ${path}`);
+        for (const p of themePaths) setKey(p, "background-image", path);
+      },
+      display: (path) => basename(path),
+      emptyHint: `no images in ${IMAGE_DIR} (press e to enter a path)`,
+      promptable: true,
+    },
+    {
+      kind: "number",
       label: "background-image-opacity",
       key: "background-image-opacity",
       paths: themePaths,
@@ -45,6 +128,7 @@ export function run(themeArg: string): void {
       jump: true,
     },
     {
+      kind: "number",
       label: "background-opacity",
       key: "background-opacity",
       paths: themePaths,
@@ -54,6 +138,7 @@ export function run(themeArg: string): void {
       jump: true,
     },
     {
+      kind: "number",
       label: "background-blur-radius",
       key: "background-blur-radius",
       paths: themePaths,
@@ -63,6 +148,7 @@ export function run(themeArg: string): void {
       jump: false,
     },
     {
+      kind: "number",
       label: "font-size",
       key: "font-size",
       paths: [CONFIG_PATH],
@@ -75,10 +161,12 @@ export function run(themeArg: string): void {
 
   let selected = 0;
   let message = "";
+  let prompt: string | null = null;
   const values: (number | null)[] = controls.map(() => null);
 
   function readValue(i: number): number | null {
     const c = controls[i]!;
+    if (c.kind !== "number") return null;
     try {
       return c.validator.coerce(parseNumber(c.key, readKey(c.paths[0]!, c.key)));
     } catch (err) {
@@ -98,25 +186,39 @@ export function run(themeArg: string): void {
     process.stdout.write(`themes: ${themes.join(" + ")}\n\n`);
     for (let i = 0; i < controls.length; i++) {
       const c = controls[i]!;
-      const v = values[i];
       const cursor = i === selected ? "❯" : " ";
-      const rendered =
-        v === null
-          ? "(unavailable)"
-          : c.jump
-            ? `${bar(v)}  ${c.validator.format(v)}`
-            : `  ${c.validator.format(v)}`;
+      let rendered: string;
+      if (c.kind === "number") {
+        const v = values[i];
+        rendered =
+          v === null
+            ? "(unavailable)"
+            : c.jump
+              ? `${bar(v)}  ${c.validator.format(v)}`
+              : `  ${c.validator.format(v)}`;
+      } else {
+        const cur = c.current();
+        const disp = c.display ?? ((s: string) => s);
+        rendered = cur === null ? "(unset)" : `‹ ${disp(cur)} ›`;
+      }
       process.stdout.write(`${cursor} ${c.label.padEnd(26)} ${rendered}\n`);
     }
     process.stdout.write("\n");
     process.stdout.write("  j/k or ↑/↓  select control\n");
-    process.stdout.write("  ←/h  −step    →/l  +step    H/L  −/+big step\n");
-    process.stdout.write("  0–9  jump (opacity controls)    r reload    q quit\n");
-    if (message) process.stdout.write(`\n  ! ${message}\n`);
+    process.stdout.write("  ←/h  −step/prev    →/l  +step/next    H/L  −/+big step\n");
+    process.stdout.write(
+      "  0–9  jump (opacity controls)    e  enter image path    r reload    q quit\n",
+    );
+    if (prompt !== null) {
+      process.stdout.write(`\n  image path: ${prompt}`);
+    } else if (message) {
+      process.stdout.write(`\n  ! ${message}\n`);
+    }
   }
 
-  function apply(next: number): void {
+  function adjustNumber(next: number): void {
     const c = controls[selected]!;
+    if (c.kind !== "number") return;
     const v = c.validator.coerce(next);
     try {
       for (const path of c.paths) writeKey(path, c.key, c.validator.format(v));
@@ -129,16 +231,54 @@ export function run(themeArg: string): void {
     draw();
   }
 
+  function adjustCycle(dir: 1 | -1): void {
+    const c = controls[selected]!;
+    if (c.kind !== "cycle") return;
+    const options = c.options();
+    if (options.length === 0) {
+      message = c.emptyHint;
+      return draw();
+    }
+    const cur = c.current();
+    const idx = cur === null ? -1 : options.indexOf(cur);
+    const next = options[(idx + dir + options.length) % options.length]!;
+    try {
+      c.apply(next);
+      message = "";
+      reloadGhostty();
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    draw();
+  }
+
+  function applyImagePath(path: string): void {
+    const c = controls.find(
+      (x): x is CycleControl => x.kind === "cycle" && x.label === "background-image",
+    )!;
+    try {
+      c.apply(path);
+      message = "";
+      reloadGhostty();
+    } catch (err) {
+      message = (err as Error).message;
+    }
+  }
+
   refresh();
   message = "";
 
   if (!process.stdin.isTTY) {
     for (let i = 0; i < controls.length; i++) {
       const c = controls[i]!;
-      const v = values[i];
-      console.log(
-        `${themes.join(",")}: ${c.key} = ${v === null ? "(unavailable)" : c.validator.format(v)}`,
-      );
+      if (c.kind === "number") {
+        const v = values[i];
+        console.log(
+          `${themes.join(",")}: ${c.key} = ${v === null ? "(unavailable)" : c.validator.format(v)}`,
+        );
+      } else {
+        console.log(`${themes.join(",")}: ${c.label} = ${c.current() ?? "(unset)"}`);
+      }
     }
     return;
   }
@@ -152,41 +292,69 @@ export function run(themeArg: string): void {
   // escape sequences or single characters and handle each in turn.
   process.stdin.on("data", (chunk: string) => {
     for (const key of chunk.match(/\x1b\[[A-D]|[\s\S]/g) ?? []) {
-      if (handleKey(key)) return;
+      handleKey(key);
     }
   });
 
-  /** Returns true when the app should quit. */
-  function handleKey(key: string): boolean {
-    if (key === "\x03" || key === "q") {
-      process.stdin.setRawMode(false);
-      process.stdout.write("\n");
-      process.exit(0);
-    }
-    const v = values[selected];
+  function handleKey(key: string): void {
+    if (prompt !== null) return handlePromptKey(key);
+    if (key === "\x03" || key === "q") return quit();
+    const c = controls[selected]!;
     if (key === "\x1b[A" || key === "k") {
       selected = (selected - 1 + controls.length) % controls.length;
-      draw();
-      return false;
+      return draw();
     }
     if (key === "\x1b[B" || key === "j") {
       selected = (selected + 1) % controls.length;
-      draw();
-      return false;
+      return draw();
     }
-    if (v !== null) {
-      if (key === "\x1b[D" || key === "h") apply(v - controls[selected]!.step);
-      else if (key === "\x1b[C" || key === "l") apply(v + controls[selected]!.step);
-      else if (key === "H") apply(v - controls[selected]!.bigStep);
-      else if (key === "L") apply(v + controls[selected]!.bigStep);
-      else if (controls[selected]!.jump && key >= "0" && key <= "9") {
-        apply(Number(key) / 10);
-      } else if (key !== "r") draw();
+    if (c.kind === "cycle") {
+      if (key === "\x1b[D" || key === "h" || key === "H") return adjustCycle(-1);
+      if (key === "\x1b[C" || key === "l" || key === "L") return adjustCycle(1);
+      if (key === "e" && c.promptable) {
+        prompt = "";
+        return draw();
+      }
+    } else {
+      const v = values[selected];
+      if (v !== null) {
+        if (key === "\x1b[D" || key === "h") return adjustNumber(v - c.step);
+        if (key === "\x1b[C" || key === "l") return adjustNumber(v + c.step);
+        if (key === "H") return adjustNumber(v - c.bigStep);
+        if (key === "L") return adjustNumber(v + c.bigStep);
+        if (c.jump && key >= "0" && key <= "9") return adjustNumber(Number(key) / 10);
+      }
     }
     if (key === "r") {
       reloadGhostty();
-      draw();
+      return draw();
     }
-    return false;
+    draw();
+  }
+
+  function handlePromptKey(key: string): void {
+    if (key === "\x03") return quit();
+    if (key === "\x1b" || key === "\x1b[D" || key === "\x1b[C") {
+      prompt = null;
+      return draw();
+    }
+    if (key === "\r" || key === "\n") {
+      const path = prompt!;
+      prompt = null;
+      if (path.length > 0) applyImagePath(path);
+      return draw();
+    }
+    if (key === "\x7f") {
+      prompt = prompt!.slice(0, -1);
+      return draw();
+    }
+    if (key >= " ") prompt += key;
+    draw();
+  }
+
+  function quit(): void {
+    process.stdin.setRawMode(false);
+    process.stdout.write("\n");
+    process.exit(0);
   }
 }
