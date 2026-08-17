@@ -15,6 +15,12 @@ import {
   type Validator,
 } from "./config.ts";
 import { reloadGhostty, resolveThemes } from "./ghostty.ts";
+import {
+  loadHistory,
+  restoreFiles,
+  saveHistory,
+  snapshotFiles,
+} from "./history.ts";
 import { loadPresets, type Preset } from "./presets.ts";
 
 const IMAGE_DIR =
@@ -177,6 +183,16 @@ export function run(themeArg: string): void {
   let prompt: string | null = null;
   const values: (number | null)[] = controls.map(() => null);
 
+  const watchedFiles = [...themePaths, CONFIG_PATH];
+  const history = loadHistory();
+  const baseline = snapshotFiles(watchedFiles);
+
+  /** Snapshot the watched files onto the persisted undo stack. */
+  function recordHistory(label: string): void {
+    history.push({ at: new Date().toISOString(), label, files: snapshotFiles(watchedFiles) });
+    saveHistory(history);
+  }
+
   function readValue(i: number): number | null {
     const c = controls[i]!;
     if (c.kind !== "number") return null;
@@ -247,7 +263,8 @@ export function run(themeArg: string): void {
   function draw(): void {
     process.stdout.write("\x1b[2J\x1b[H");
     process.stdout.write("Ghostty dial\n");
-    process.stdout.write(`themes: ${themes.join(" + ")}\n\n`);
+    process.stdout.write(`themes: ${themes.join(" + ")}\n`);
+    process.stdout.write(`history: ${history.length} change(s)\n\n`);
     for (let i = 0; i < controls.length; i++) {
       const c = controls[i]!;
       const cursor = i === selected ? "❯" : " ";
@@ -274,6 +291,7 @@ export function run(themeArg: string): void {
     process.stdout.write(
       "  0–9  jump (opacity controls)    e  enter image path    r reload    q quit\n",
     );
+    process.stdout.write("  u  undo last change    R  reset to session-start state\n");
     if (prompt !== null) {
       process.stdout.write(`\n  image path: ${prompt}`);
     } else if (message) {
@@ -286,6 +304,7 @@ export function run(themeArg: string): void {
     if (c.kind !== "number") return;
     const v = c.validator.coerce(next);
     try {
+      recordHistory(`${c.key} → ${c.validator.format(v)}`);
       for (const path of c.paths) writeKey(path, c.key, c.validator.format(v));
       values[selected] = v;
       message = "";
@@ -308,6 +327,7 @@ export function run(themeArg: string): void {
     const idx = cur === null ? -1 : options.indexOf(cur);
     const next = options[(idx + dir + options.length) % options.length]!;
     try {
+      recordHistory(`${c.label} → ${(c.display ?? ((s: string) => s))(next)}`);
       c.apply(next);
       message = "";
       reloadGhostty();
@@ -322,12 +342,44 @@ export function run(themeArg: string): void {
       (x): x is CycleControl => x.kind === "cycle" && x.label === "background-image",
     )!;
     try {
+      recordHistory(`background-image → ${path}`);
       c.apply(path);
       message = "";
       reloadGhostty();
     } catch (err) {
       message = (err as Error).message;
     }
+  }
+
+  function undo(): void {
+    const entry = history.pop();
+    if (!entry) {
+      message = "nothing to undo";
+      return draw();
+    }
+    try {
+      restoreFiles(entry.files);
+      saveHistory(history);
+      refresh();
+      message = `undid: ${entry.label}`;
+      reloadGhostty();
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    draw();
+  }
+
+  function resetToBaseline(): void {
+    try {
+      recordHistory("reset to baseline");
+      restoreFiles(baseline);
+      refresh();
+      message = "reset to session-start state";
+      reloadGhostty();
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    draw();
   }
 
   refresh();
@@ -396,6 +448,8 @@ export function run(themeArg: string): void {
       reloadGhostty();
       return draw();
     }
+    if (key === "u") return undo();
+    if (key === "R") return resetToBaseline();
     draw();
   }
 
