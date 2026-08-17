@@ -22,6 +22,12 @@ import {
   snapshotFiles,
 } from "./history.ts";
 import { loadPresets, type Preset } from "./presets.ts";
+import {
+  loadProfiles,
+  profileForDirectory,
+  saveProfiles,
+  type Profile,
+} from "./profiles.ts";
 
 const IMAGE_DIR =
   process.env.GHOSTTY_IMAGE_DIR ?? join(HOME, ".config/ghostty/images");
@@ -92,8 +98,19 @@ export function run(themeArg: string): void {
   const themes = resolveThemes(themeArg);
   const themePaths = themes.map((t) => join(THEME_DIR, t));
   const presets = loadPresets();
+  const profiles = loadProfiles();
+  let activeProfile: Profile | null = null;
 
   const controls: Control[] = [
+    {
+      kind: "cycle",
+      label: "profile",
+      options: () => profiles.map((p) => p.name).sort(),
+      current: () => activeProfile?.name ?? null,
+      apply: (name) => selectProfile(name),
+      emptyHint: "no profiles defined (press n to bind one to this directory)",
+      unsetLabel: "none",
+    },
     {
       kind: "cycle",
       label: "preset",
@@ -181,6 +198,7 @@ export function run(themeArg: string): void {
   let selected = 0;
   let message = "";
   let prompt: string | null = null;
+  let promptFor: "image" | "profile" = "image";
   const values: (number | null)[] = controls.map(() => null);
   /** Staged (not yet written) changes: control index -> new value. */
   const pending = new Map<number, number | string>();
@@ -259,6 +277,50 @@ export function run(themeArg: string): void {
       }
       for (const path of themePaths) setKey(path, "background-image", p["background-image"]);
     }
+  }
+
+  function selectProfile(name: string): void {
+    const profile = profiles.find((p) => p.name === name);
+    if (!profile) throw new Error(`Unknown profile: ${name}`);
+    if (!presets[profile.preset]) {
+      throw new Error(`Profile ${name} references unknown preset: ${profile.preset}`);
+    }
+    applyPreset(profile.preset);
+    activeProfile = profile;
+  }
+
+  /** Create (or overwrite) a profile binding cwd to the current preset. */
+  function createProfile(name: string): void {
+    const preset = currentPresetName();
+    if (!preset) {
+      message = "no preset matches current settings; apply a preset first";
+      return;
+    }
+    const profile: Profile = { name, directory: process.cwd(), preset };
+    const existing = profiles.findIndex((p) => p.name === name);
+    if (existing >= 0) profiles[existing] = profile;
+    else profiles.push(profile);
+    saveProfiles(profiles);
+    activeProfile = profile;
+    message = `profile saved: ${name} (${preset} @ ${process.cwd()})`;
+  }
+
+  /** Re-bind the active profile to cwd and the current preset. */
+  function updateProfile(): void {
+    if (!activeProfile) {
+      message = "no active profile to update";
+      return draw();
+    }
+    const preset = currentPresetName();
+    if (!preset) {
+      message = "no preset matches current settings; apply a preset first";
+      return draw();
+    }
+    activeProfile.directory = process.cwd();
+    activeProfile.preset = preset;
+    saveProfiles(profiles);
+    message = `profile updated: ${activeProfile.name}`;
+    draw();
   }
 
   /** Drop a staged change when it matches the value already on disk. */
@@ -341,8 +403,11 @@ export function run(themeArg: string): void {
       "  0–9  jump (opacity controls)    e  enter image path    r reload    q quit\n",
     );
     process.stdout.write("  Enter  apply pending    Esc  cancel pending    u  undo    R  reset\n");
+    process.stdout.write("  n  new profile for this directory    w  update active profile\n");
     if (prompt !== null) {
-      process.stdout.write(`\n  image path: ${prompt}`);
+      process.stdout.write(
+        `\n  ${promptFor === "image" ? "image path" : "profile name"}: ${prompt}`,
+      );
     } else if (message) {
       process.stdout.write(`\n  ! ${message}\n`);
     }
@@ -453,6 +518,21 @@ export function run(themeArg: string): void {
   refresh();
   message = "";
 
+  // Launching inside a bound directory auto-applies its profile's preset.
+  const cwdProfile = profileForDirectory(profiles, process.cwd());
+  if (cwdProfile) {
+    try {
+      recordHistory(`auto-applied profile: ${cwdProfile.name}`);
+      applyPreset(cwdProfile.preset);
+      activeProfile = cwdProfile;
+      refresh();
+      message = `auto-applied profile: ${cwdProfile.name}`;
+      reloadGhostty();
+    } catch (err) {
+      message = (err as Error).message;
+    }
+  }
+
   if (!process.stdin.isTTY) {
     for (let i = 0; i < controls.length; i++) {
       const c = controls[i]!;
@@ -500,6 +580,7 @@ export function run(themeArg: string): void {
       if (key === "\x1b[C" || key === "l" || key === "L") return adjustCycle(1);
       if (key === "e" && c.promptable) {
         prompt = "";
+        promptFor = "image";
         return draw();
       }
     } else {
@@ -514,6 +595,12 @@ export function run(themeArg: string): void {
     }
     if (key === "\r" || key === "\n") return confirmPending();
     if (key === "\x1b" && pending.size > 0) return cancelPending();
+    if (key === "n") {
+      prompt = "";
+      promptFor = "profile";
+      return draw();
+    }
+    if (key === "w") return updateProfile();
     if (key === "r") {
       reloadGhostty();
       return draw();
@@ -530,9 +617,12 @@ export function run(themeArg: string): void {
       return draw();
     }
     if (key === "\r" || key === "\n") {
-      const path = prompt!;
+      const text = prompt!;
       prompt = null;
-      if (path.length > 0) stageImagePath(path);
+      if (text.length > 0) {
+        if (promptFor === "image") stageImagePath(text);
+        else createProfile(text);
+      }
       return draw();
     }
     if (key === "\x7f") {

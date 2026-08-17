@@ -28,6 +28,9 @@ Controls:
 - `0` through `9`: stage a jump to `0.0` through `0.9` (opacity controls only).
 - `e`: type a background-image path directly (on the background-image control);
   the path is validated to exist before it is staged.
+- `n`: create (or overwrite) a profile binding the current directory to the
+  currently matching preset.
+- `w`: update the active profile to the current directory and preset.
 - `Enter`: apply all pending changes (writes files, records one history entry,
   reloads Ghostty).
 - `Esc`: discard all pending changes without touching the configuration.
@@ -43,6 +46,12 @@ cancels. History (`u` / `R`) records confirmed changes only.
 
 Available controls and steps:
 
+- `profile` — workspace-specific profiles binding a directory to a preset.
+  Shows `(none)` when no profile is active. Profiles are stored in
+  `~/.config/ghostty/dial-profiles.json` (override with `DIAL_PROFILES`) as a
+  JSON array of `{"name", "directory", "preset"}` objects, separate from
+  theme files; a corrupt file is ignored. Launching the tool inside a bound
+  directory auto-applies that profile's preset (recorded in history).
 - `preset` — cycles through named appearance presets, staging the selected
   one (all numeric controls plus theme, and the background image when the
   preset sets one); `Enter` applies it and reloads Ghostty. Shows `(custom)`
