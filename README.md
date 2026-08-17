@@ -32,6 +32,15 @@ Controls:
 
 Available controls and steps:
 
+- `preset` — cycles through named appearance presets and applies the selected
+  one immediately (all numeric controls plus theme, and the background image
+  when the preset sets one), then reloads Ghostty. Shows `(custom)` when the
+  current settings match no preset. Built-in presets: `subtle`, `balanced`,
+  `dramatic`, `clear`. User presets live in `~/.config/ghostty/dial-presets.json`
+  (override with `DIAL_PRESETS`) as a JSON object mapping names to presets, e.g.
+  `{"work": {"background-image-opacity": 0.2, "background-opacity": 0.9, "background-blur-radius": 20, "font-size": 15, "theme": "cent-dark"}}`;
+  user presets override built-ins of the same name, and a corrupt file is
+  ignored. The `background-image` field is optional.
 - `theme` — cycles through theme files found in the theme directory; the
   selection is written as `theme = <name>` in the main config.
 - `background-image` — cycles through images found in the image directory, or

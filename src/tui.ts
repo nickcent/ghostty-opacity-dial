@@ -15,6 +15,7 @@ import {
   type Validator,
 } from "./config.ts";
 import { reloadGhostty, resolveThemes } from "./ghostty.ts";
+import { loadPresets, type Preset } from "./presets.ts";
 
 const IMAGE_DIR =
   process.env.GHOSTTY_IMAGE_DIR ?? join(HOME, ".config/ghostty/images");
@@ -47,6 +48,8 @@ interface CycleControl {
   emptyHint: string;
   /** When true, `e` opens a free-text path prompt. */
   promptable?: boolean;
+  /** Label shown instead of "(unset)" when there is no current option. */
+  unsetLabel?: string;
 }
 
 type Control = NumberControl | CycleControl;
@@ -82,8 +85,18 @@ function discoverImages(): string[] {
 export function run(themeArg: string): void {
   const themes = resolveThemes(themeArg);
   const themePaths = themes.map((t) => join(THEME_DIR, t));
+  const presets = loadPresets();
 
   const controls: Control[] = [
+    {
+      kind: "cycle",
+      label: "preset",
+      options: () => Object.keys(presets).sort(),
+      current: () => currentPresetName(),
+      apply: (name) => applyPreset(name),
+      emptyHint: "no presets defined",
+      unsetLabel: "custom",
+    },
     {
       kind: "cycle",
       label: "theme",
@@ -180,6 +193,57 @@ export function run(themeArg: string): void {
     for (let i = 0; i < controls.length; i++) values[i] = readValue(i);
   }
 
+  function numberValue(key: string): number | null {
+    const i = controls.findIndex((c) => c.kind === "number" && c.key === key);
+    return i === -1 ? null : values[i];
+  }
+
+  function currentPresetName(): string | null {
+    let theme: string | null = null;
+    let image: string | null = null;
+    try {
+      theme = readKey(CONFIG_PATH, "theme");
+    } catch {}
+    try {
+      image = readKey(themePaths[0]!, "background-image");
+    } catch {}
+    for (const [name, p] of Object.entries(presets)) {
+      if (
+        numberValue("background-image-opacity") === p["background-image-opacity"] &&
+        numberValue("background-opacity") === p["background-opacity"] &&
+        numberValue("background-blur-radius") === p["background-blur-radius"] &&
+        numberValue("font-size") === p["font-size"] &&
+        theme === p.theme &&
+        (p["background-image"] === undefined || image === p["background-image"])
+      ) {
+        return name;
+      }
+    }
+    return null;
+  }
+
+  function applyPreset(name: string): void {
+    const p = presets[name];
+    if (!p) throw new Error(`Unknown preset: ${name}`);
+    for (const c of controls) {
+      if (c.kind === "number") {
+        const v = (p as unknown as Record<string, unknown>)[c.key];
+        if (typeof v === "number") {
+          const coerced = c.validator.coerce(v);
+          for (const path of c.paths) writeKey(path, c.key, c.validator.format(coerced));
+        }
+      }
+    }
+    setKey(CONFIG_PATH, "theme", p.theme);
+    if (p["background-image"] !== undefined) {
+      if (!existsSync(p["background-image"])) {
+        throw new Error(`Image not found: ${p["background-image"]}`);
+      }
+      for (const path of themePaths) setKey(path, "background-image", p["background-image"]);
+    }
+    refresh();
+  }
+
   function draw(): void {
     process.stdout.write("\x1b[2J\x1b[H");
     process.stdout.write("Ghostty dial\n");
@@ -199,7 +263,8 @@ export function run(themeArg: string): void {
       } else {
         const cur = c.current();
         const disp = c.display ?? ((s: string) => s);
-        rendered = cur === null ? "(unset)" : `‹ ${disp(cur)} ›`;
+        rendered =
+          cur === null ? `(${c.unsetLabel ?? "unset"})` : `‹ ${disp(cur)} ›`;
       }
       process.stdout.write(`${cursor} ${c.label.padEnd(26)} ${rendered}\n`);
     }
@@ -277,7 +342,9 @@ export function run(themeArg: string): void {
           `${themes.join(",")}: ${c.key} = ${v === null ? "(unavailable)" : c.validator.format(v)}`,
         );
       } else {
-        console.log(`${themes.join(",")}: ${c.label} = ${c.current() ?? "(unset)"}`);
+        console.log(
+          `${themes.join(",")}: ${c.label} = ${c.current() ?? `(${c.unsetLabel ?? "unset"})`}`,
+        );
       }
     }
     return;
