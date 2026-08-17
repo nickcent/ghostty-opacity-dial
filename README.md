@@ -28,6 +28,8 @@ Controls:
 - `0` through `9`: jump to `0.0` through `0.9` (opacity controls only).
 - `e`: type a background-image path directly (on the background-image control).
 - `r`: reload Ghostty configuration.
+- `u`: undo the last applied change (restores the previous file contents).
+- `R`: reset to the session-start baseline.
 - `q`: quit.
 
 Available controls and steps:
@@ -58,6 +60,13 @@ Available controls and steps:
 
 Values are validated and clamped before writing, and Ghostty reloads through
 the configured `super+shift+,` shortcut after every accepted change.
+
+History: before every applied change, the current contents of the targeted
+theme files and main config are pushed onto an undo stack persisted to
+`~/.config/ghostty/dial-history.json` (override with `DIAL_HISTORY`), so undo
+works across process restarts. `u` pops and restores the latest snapshot;
+`R` restores the state captured when the session started (and is itself
+undoable). A missing or corrupt history file is ignored and starts fresh.
 
 Requires macOS, Ghostty, Bun, and Accessibility permission for System Events.
 
