@@ -182,6 +182,8 @@ export function run(themeArg: string): void {
   let message = "";
   let prompt: string | null = null;
   const values: (number | null)[] = controls.map(() => null);
+  /** Staged (not yet written) changes: control index -> new value. */
+  const pending = new Map<number, number | string>();
 
   const watchedFiles = [...themePaths, CONFIG_PATH];
   const history = loadHistory();
@@ -257,7 +259,42 @@ export function run(themeArg: string): void {
       }
       for (const path of themePaths) setKey(path, "background-image", p["background-image"]);
     }
-    refresh();
+  }
+
+  /** Drop a staged change when it matches the value already on disk. */
+  function stage(i: number, value: number | string): void {
+    const c = controls[i]!;
+    const onDisk =
+      c.kind === "number"
+        ? values[i]
+        : c.current();
+    if (onDisk !== null && value === onDisk) pending.delete(i);
+    else pending.set(i, value);
+  }
+
+  /** Files a staged change on control `i` would touch. */
+  function affectedFiles(i: number): string[] {
+    const c = controls[i]!;
+    if (c.kind === "number") return c.paths;
+    if (c.label === "theme") return [CONFIG_PATH];
+    if (c.label === "background-image") return themePaths;
+    return watchedFiles; // preset
+  }
+
+  /** One-line `old → new` description of a staged change. */
+  function pendingLine(i: number): string {
+    const c = controls[i]!;
+    const next = pending.get(i)!;
+    const files = affectedFiles(i).map((p) => basename(p)).join(", ");
+    if (c.kind === "number") {
+      const cur = values[i];
+      const old = cur === null ? "?" : c.validator.format(cur);
+      return `${c.label}: ${old} → ${c.validator.format(next as number)}  (${files})`;
+    }
+    const disp = c.display ?? ((s: string) => s);
+    const cur = c.current();
+    const old = cur === null ? `(${c.unsetLabel ?? "unset"})` : disp(cur);
+    return `${c.label}: ${old} → ${disp(next as string)}  (${files})`;
   }
 
   function draw(): void {
@@ -268,30 +305,42 @@ export function run(themeArg: string): void {
     for (let i = 0; i < controls.length; i++) {
       const c = controls[i]!;
       const cursor = i === selected ? "❯" : " ";
+      const staged = pending.get(i);
       let rendered: string;
       if (c.kind === "number") {
-        const v = values[i];
+        const v = staged !== undefined ? (staged as number) : values[i];
         rendered =
           v === null
             ? "(unavailable)"
             : c.jump
               ? `${bar(v)}  ${c.validator.format(v)}`
               : `  ${c.validator.format(v)}`;
+        if (staged !== undefined && values[i] !== null) {
+          rendered += `  (${c.validator.format(values[i]!)} → ${c.validator.format(staged as number)})`;
+        }
       } else {
         const cur = c.current();
         const disp = c.display ?? ((s: string) => s);
         rendered =
           cur === null ? `(${c.unsetLabel ?? "unset"})` : `‹ ${disp(cur)} ›`;
+        if (staged !== undefined) rendered += ` → ‹ ${disp(staged as string)} ›`;
       }
       process.stdout.write(`${cursor} ${c.label.padEnd(26)} ${rendered}\n`);
     }
     process.stdout.write("\n");
+    if (pending.size > 0) {
+      process.stdout.write("  pending changes (Enter apply, Esc cancel):\n");
+      for (const i of pending.keys()) {
+        process.stdout.write(`    ${pendingLine(i)}\n`);
+      }
+      process.stdout.write("\n");
+    }
     process.stdout.write("  j/k or ↑/↓  select control\n");
     process.stdout.write("  ←/h  −step/prev    →/l  +step/next    H/L  −/+big step\n");
     process.stdout.write(
       "  0–9  jump (opacity controls)    e  enter image path    r reload    q quit\n",
     );
-    process.stdout.write("  u  undo last change    R  reset to session-start state\n");
+    process.stdout.write("  Enter  apply pending    Esc  cancel pending    u  undo    R  reset\n");
     if (prompt !== null) {
       process.stdout.write(`\n  image path: ${prompt}`);
     } else if (message) {
@@ -302,16 +351,8 @@ export function run(themeArg: string): void {
   function adjustNumber(next: number): void {
     const c = controls[selected]!;
     if (c.kind !== "number") return;
-    const v = c.validator.coerce(next);
-    try {
-      recordHistory(`${c.key} → ${c.validator.format(v)}`);
-      for (const path of c.paths) writeKey(path, c.key, c.validator.format(v));
-      values[selected] = v;
-      message = "";
-      reloadGhostty();
-    } catch (err) {
-      message = (err as Error).message;
-    }
+    stage(selected, c.validator.coerce(next));
+    message = "";
     draw();
   }
 
@@ -323,13 +364,46 @@ export function run(themeArg: string): void {
       message = c.emptyHint;
       return draw();
     }
-    const cur = c.current();
-    const idx = cur === null ? -1 : options.indexOf(cur);
+    const staged = pending.get(selected) as string | undefined;
+    const base = staged ?? c.current();
+    const idx = base === null || base === undefined ? -1 : options.indexOf(base);
     const next = options[(idx + dir + options.length) % options.length]!;
+    stage(selected, next);
+    message = "";
+    draw();
+  }
+
+  function stageImagePath(path: string): void {
+    const i = controls.findIndex(
+      (x) => x.kind === "cycle" && x.label === "background-image",
+    );
+    if (!existsSync(path)) {
+      message = `Image not found: ${path}`;
+      return;
+    }
+    stage(i, path);
+    message = "";
+  }
+
+  /** Write every staged change, record one history entry, reload Ghostty. */
+  function confirmPending(): void {
+    if (pending.size === 0) return draw();
+    const labels = [...pending.keys()].map((i) => pendingLine(i));
     try {
-      recordHistory(`${c.label} → ${(c.display ?? ((s: string) => s))(next)}`);
-      c.apply(next);
-      message = "";
+      recordHistory(labels.join("; "));
+      for (const [i, next] of pending) {
+        const c = controls[i]!;
+        if (c.kind === "number") {
+          for (const path of c.paths) {
+            writeKey(path, c.key, c.validator.format(next as number));
+          }
+        } else {
+          c.apply(next as string);
+        }
+      }
+      pending.clear();
+      refresh();
+      message = "applied pending changes";
       reloadGhostty();
     } catch (err) {
       message = (err as Error).message;
@@ -337,18 +411,10 @@ export function run(themeArg: string): void {
     draw();
   }
 
-  function applyImagePath(path: string): void {
-    const c = controls.find(
-      (x): x is CycleControl => x.kind === "cycle" && x.label === "background-image",
-    )!;
-    try {
-      recordHistory(`background-image → ${path}`);
-      c.apply(path);
-      message = "";
-      reloadGhostty();
-    } catch (err) {
-      message = (err as Error).message;
-    }
+  function cancelPending(): void {
+    pending.clear();
+    message = "cancelled; configuration unchanged";
+    draw();
   }
 
   function undo(): void {
@@ -360,6 +426,7 @@ export function run(themeArg: string): void {
     try {
       restoreFiles(entry.files);
       saveHistory(history);
+      pending.clear();
       refresh();
       message = `undid: ${entry.label}`;
       reloadGhostty();
@@ -373,6 +440,7 @@ export function run(themeArg: string): void {
     try {
       recordHistory("reset to baseline");
       restoreFiles(baseline);
+      pending.clear();
       refresh();
       message = "reset to session-start state";
       reloadGhostty();
@@ -435,8 +503,8 @@ export function run(themeArg: string): void {
         return draw();
       }
     } else {
-      const v = values[selected];
-      if (v !== null) {
+      const v = (pending.get(selected) as number | undefined) ?? values[selected];
+      if (v !== null && v !== undefined) {
         if (key === "\x1b[D" || key === "h") return adjustNumber(v - c.step);
         if (key === "\x1b[C" || key === "l") return adjustNumber(v + c.step);
         if (key === "H") return adjustNumber(v - c.bigStep);
@@ -444,6 +512,8 @@ export function run(themeArg: string): void {
         if (c.jump && key >= "0" && key <= "9") return adjustNumber(Number(key) / 10);
       }
     }
+    if (key === "\r" || key === "\n") return confirmPending();
+    if (key === "\x1b" && pending.size > 0) return cancelPending();
     if (key === "r") {
       reloadGhostty();
       return draw();
@@ -462,7 +532,7 @@ export function run(themeArg: string): void {
     if (key === "\r" || key === "\n") {
       const path = prompt!;
       prompt = null;
-      if (path.length > 0) applyImagePath(path);
+      if (path.length > 0) stageImagePath(path);
       return draw();
     }
     if (key === "\x7f") {
